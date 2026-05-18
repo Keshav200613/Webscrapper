@@ -1,0 +1,26 @@
+{
+  "name": "webscraping",
+  "version": "1.0.0",
+  "main": "web.js",
+  "scripts": {
+    "start": "node web.js",
+    "postinstall": "npx puppeteer browsers install chrome",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "type": "commonjs",
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "cluster": "^0.7.7",
+    "compression": "^1.7.5",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "puppeteer": "^24.2.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}
