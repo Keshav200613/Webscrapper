@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Scraped output data (stored as GitHub Actions artifacts instead)
+scrapedData*.json
+ScrapedData*.json
+scrape_result.json
+
+# macOS
+.DS_Store
+
+# Environment files
+.env
+.env.local

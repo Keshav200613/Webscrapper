@@ -1,0 +1,137 @@
+name: Run Web Scraper
+
+on:
+  # ── Manual trigger with custom inputs ────────────────────────────────────────
+  workflow_dispatch:
+    inputs:
+      searchquery:
+        description: "Product to search (e.g. milk, bread)"
+        required: true
+        default: "milk"
+      pincode:
+        description: "Delivery pincode"
+        required: true
+        default: "400001"
+
+  # ── Scheduled run (every 6 hours) — edit or remove as needed ─────────────────
+  schedule:
+    - cron: "0 */6 * * *"
+
+env:
+  # GitHub Actions ubuntu-latest ships with Google Chrome pre-installed
+  PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome-stable
+  PUPPETEER_SKIP_DOWNLOAD: "true"   # don't download Chromium — use system Chrome
+  PORT: 3000
+
+jobs:
+  scrape:
+    name: Scrape Grocery Prices
+    runs-on: ubuntu-latest
+    timeout-minutes: 30            # generous timeout for 4 parallel scrapers
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Node.js setup ─────────────────────────────────────────────────────
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+
+      # ── 3. Verify Chrome is available ────────────────────────────────────────
+      - name: Verify Chrome installation
+        run: |
+          google-chrome-stable --version || google-chrome --version
+          # Normalise path: some runners use 'google-chrome' not 'google-chrome-stable'
+          if ! command -v google-chrome-stable &>/dev/null; then
+            echo "PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome" >> $GITHUB_ENV
+          fi
+
+      # ── 4. Install npm dependencies ──────────────────────────────────────────
+      - name: Install dependencies
+        run: npm ci
+
+      # ── 5. Start server in the background ────────────────────────────────────
+      - name: Start Express server
+        run: |
+          node web.js &
+          echo "SERVER_PID=$!" >> $GITHUB_ENV
+          # Wait until /health responds (max 60s)
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/health > /dev/null 2>&1; then
+              echo "✅ Server is up (attempt $i)"
+              break
+            fi
+            echo "⏳ Waiting for server... ($i/30)"
+            sleep 2
+          done
+
+      # ── 6. Determine search inputs (dispatch vs schedule) ─────────────────────
+      - name: Set scrape parameters
+        id: params
+        run: |
+          # Use workflow_dispatch inputs if provided, otherwise use defaults
+          QUERY="${{ github.event.inputs.searchquery }}"
+          PIN="${{ github.event.inputs.pincode }}"
+          echo "searchquery=${QUERY:-milk}" >> $GITHUB_OUTPUT
+          echo "pincode=${PIN:-400001}"      >> $GITHUB_OUTPUT
+
+      # ── 7. Run the scrape ─────────────────────────────────────────────────────
+      - name: Scrape grocery prices
+        id: scrape
+        run: |
+          echo "🔍 Searching for: ${{ steps.params.outputs.searchquery }} @ pincode ${{ steps.params.outputs.pincode }}"
+
+          RESPONSE=$(curl -sf -X POST http://localhost:3000/scrape \
+            -H "Content-Type: application/json" \
+            -d '{
+              "searchquery": "${{ steps.params.outputs.searchquery }}",
+              "pincode":     "${{ steps.params.outputs.pincode }}"
+            }' \
+            --max-time 600)          # allow up to 10 min for all 4 scrapers
+
+          echo "$RESPONSE" | python3 -m json.tool --no-ensure-ascii > scrape_result.json
+          echo "✅ Scrape complete."
+
+          # Quick summary
+          echo "--- Result summary ---"
+          python3 - <<'PYEOF'
+          import json, sys
+          with open("scrape_result.json") as f:
+              d = json.load(f)
+          for k in ["jiodata", "zeptodata", "blinkitData", "bigbasketData"]:
+              items = d.get(k, [])
+              print(f"  {k}: {len(items)} products")
+          if d.get("errors"):
+              print("  Errors:", d["errors"])
+          PYEOF
+
+      # ── 8. Stop the server ────────────────────────────────────────────────────
+      - name: Stop Express server
+        if: always()
+        run: kill $SERVER_PID 2>/dev/null || true
+
+      # ── 9. Upload all JSON results as artifacts ───────────────────────────────
+      - name: Upload scraped data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraped-data-${{ steps.params.outputs.searchquery }}-${{ github.run_number }}
+          path: |
+            scrape_result.json
+            scrapedDatajio.json
+            ScrapedDatablinkit.json
+            ScrapedDatazepto.json
+            scrapedDatabigbasket.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── 10. Commit results back to repo (optional — uncomment to enable) ──────
+      # - name: Commit scraped data to repo
+      #   uses: stefanzweifel/git-auto-commit-action@v5
+      #   with:
+      #     commit_message: "chore: scraped data for '${{ steps.params.outputs.searchquery }}' [skip ci]"
+      #     file_pattern: "*.json"
